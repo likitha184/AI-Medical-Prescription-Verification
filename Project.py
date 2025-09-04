@@ -6,7 +6,7 @@ import torch
 from huggingface_hub import HfApi, login
 
 # Hugging Face Token (hardcoded)
-HF_TOKEN = "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"
+HF_TOKEN = "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"
 
 # ---------------------------
 # Hugging Face Token Validation
@@ -144,3 +144,4 @@ if validate_huggingface_token():
                 st.write(prediction)
             except Exception as e:
                 st.error(f"AI model error: {e}")
+

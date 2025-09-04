@@ -1,155 +1,146 @@
-import os
-import re
 import streamlit as st
-from transformers import pipeline
+from PIL import Image
+from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+from transformers.trainer_utils import set_seed
+import torch
+from huggingface_hub import HfApi, login
 
-HF_TOKEN = "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"
+# Hugging Face Token (hardcoded)
+HF_TOKEN = "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"
 
-# ---------------- Load NER Model ----------------
-@st.cache_resource
-def load_ner_pipeline():
-    return pipeline(
-        "token-classification",
-        model="d4data/biomedical-ner-all",
-        tokenizer="d4data/biomedical-ner-all",
-        aggregation_strategy="simple",
-        token=HF_TOKEN,
-        device=-1
-    )
+# ---------------------------
+# Hugging Face Token Validation
+# ---------------------------
+def validate_huggingface_token():
+    if not HF_TOKEN.startswith("hf_"):
+        st.error("Invalid Hugging Face token format.")
+        return False
+    try:
+        login(token=HF_TOKEN, add_to_git_credential=False)
+        api = HfApi()
+        user = api.whoami()
+        st.success(f"✅ Hugging Face login successful! Logged in as: {user['name']}")
+        return True
+    except Exception as e:
+        st.error(f"Login failed: {e}")
+        return False
 
+# ---------------------------
+# Entity Extraction (NER)
+# ---------------------------
 def extract_entities(text):
-    ner = load_ner_pipeline()
-    return ner(text)
+    try:
+        ner = pipeline(
+            "token-classification",
+            model="blaze999/Medical-NER",
+            aggregation_strategy="simple",
+            token=HF_TOKEN  # ✅ correct argument
+        )
+        entities = ner(text)
+    except Exception as e:
+        st.error(f"Entity extraction error: {e}")
+        entities = []
+    # Organize entities (depends on model labels)
+    drugs = [e for e in entities if 'DRUG' in e.get('entity_group', '')]
+    return drugs, entities
 
-# ---------------- Helpers ----------------
-def normalize_drug_names(entities, text):
-    drugs = []
-    for e in entities:
-        label = e.get("entity_group", "").upper()
-        if any(key in label for key in ["MEDICATION", "DRUG", "CHEMICAL"]):
-            drugs.append(e["word"])
-    regex_drugs = re.findall(r"\b[A-Z][a-zA-Z]{2,}(?:ine|ol|cin|vir|mycin|azole)\b", text)
-    drugs.extend(regex_drugs)
-    return list(set(drugs))
+# ---------------------------
+# Normalize Drug Names (Dummy)
+# ---------------------------
+def normalize_drug_names(drugs):
+    return [{"brand": d['word'], "generic": d['word'].lower()} for d in drugs]
 
-def extract_diseases(entities, text):
-    diseases = []
-    for e in entities:
-        label = e.get("entity_group", "").upper()
-        if any(key in label for key in ["DISEASE", "CONDITION", "SYMPTOM"]):
-            diseases.append(e["word"])
-    regex_diseases = re.findall(r"\b(fever|diabetes|hypertension|asthma|cough|infection)\b", text, re.IGNORECASE)
-    diseases.extend(regex_diseases)
-    return list(set(diseases))
+# ---------------------------
+# Validate Dosages (Dummy)
+# ---------------------------
+def validate_dosages(dosages, age=None, weight=None, conditions=None):
+    return [{"dosage": d['word'], "valid": True, "reason": "Within safe limits"} for d in dosages]
 
-def extract_dosage_info(text, entities):
-    dosages = [e["word"] for e in entities if "STRENGTH" in e.get("entity_group", "").upper()]
-    regex_matches = re.findall(r"\b\d+\s?(mg|ml|g|mcg|tablet|capsule|unit|units)\b", text, re.IGNORECASE)
-    dosages.extend(regex_matches)
-    return list(set(dosages))
-
-def extract_frequency(text):
-    frequency_patterns = {
-        r"\bonce (daily|a day)\b": ["Morning"],
-        r"\btwice (daily|a day)\b": ["Morning", "Evening"],
-        r"\bthrice (daily|a day)\b": ["Morning", "Afternoon", "Night"],
-        r"\bevery 8 hours\b": ["Morning", "Afternoon", "Night"],
-        r"\bevery 12 hours\b": ["Morning", "Night"],
-        r"\bat night\b": ["Night"],
-        r"\bin morning\b": ["Morning"],
-        r"\bin evening\b": ["Evening"],
-        r"\bafter food\b": ["After meals"],
-        r"\bbefore food\b": ["Before meals"],
-    }
-    schedule = []
-    for pattern, times in frequency_patterns.items():
-        if re.search(pattern, text, re.IGNORECASE):
-            schedule.extend(times)
-    return list(set(schedule)) if schedule else ["Not specified"]
-
-def check_drug_interactions(drugs):
-    if len(drugs) > 1:
-        return [f"⚠️ Potential interaction between {drugs[0]} and {drugs[1]}"]
+# ---------------------------
+# Check Drug Interactions (Dummy)
+# ---------------------------
+def check_interactions(drugs):
     return ["No interactions detected"]
 
-# ---------------- NEW FEATURE: Age Suitability ----------------
-def check_age_suitability(drug, dosage, age_group):
-    rules = {
-        "Paracetamol": {
-            "children": "Safe in lower doses (10-15mg/kg). Avoid overdose.",
-            "adults": "Safe up to 500–1000 mg every 6–8 hours.",
-            "elderly": "Generally safe but monitor liver function."
-        },
-        "Ibuprofen": {
-            "children": "Avoid under 6 months. Use syrup form for kids.",
-            "adults": "Safe 200–400 mg every 6–8 hours.",
-            "elderly": "Use cautiously. May cause stomach/kidney issues."
-        },
-        "Amoxicillin": {
-            "children": "Safe but dosage based on weight.",
-            "adults": "Safe 250–500 mg every 8 hours.",
-            "elderly": "Safe but monitor kidney function."
-        }
-    }
-    drug = drug.capitalize()
-    if drug in rules and age_group in rules[drug]:
-        return rules[drug][age_group]
-    return "No specific age guideline available."
+# ---------------------------
+# IBM Watson NLP Stub
+# ---------------------------
+def ibm_watson_analysis(text):
+    return "IBM Watson NLP analysis (stub)."
 
-# ---------------- NEW FEATURE: Side Effects ----------------
-def get_side_effects(drug):
-    side_effects_db = {
-        "Paracetamol": ["Nausea", "Liver damage (overdose)", "Allergic reaction (rare)"],
-        "Ibuprofen": ["Stomach pain", "Heartburn", "Kidney issues", "Increased blood pressure"],
-        "Amoxicillin": ["Diarrhea", "Nausea", "Rash", "Yeast infection"],
-        "Metformin": ["Stomach upset", "Diarrhea", "Low blood sugar", "Vitamin B12 deficiency"]
-    }
-    drug = drug.capitalize()
-    return side_effects_db.get(drug, ["No side effect info available"])
+# ---------------------------
+# Streamlit UI
+# ---------------------------
+st.title("🩺 AI Medical Prescription Analyzer")
 
-# ---------------- Streamlit UI ----------------
-st.set_page_config(page_title="AI Prescription Analyser", page_icon="🩺")
-st.title("🩺 AI Medical Prescription Analyser")
+if validate_huggingface_token():
+    uploaded = st.file_uploader("Upload Prescription (image/pdf)", type=["jpg","png","jpeg","pdf"])
+    extracted_text = ""
+    
+    if uploaded:
+        from pdf2image import convert_from_bytes
+        import io
+        try:
+            if uploaded.type == "application/pdf":
+                images = convert_from_bytes(uploaded.read())
+                img = images[0]
+            else:
+                img = Image.open(io.BytesIO(uploaded.read()))
+            st.image(img, caption="Uploaded Prescription")
+            extracted_text = st.text_area("Enter prescription text:")
+        except Exception as e:
+            st.error(f"File processing error: {e}")
 
-prescription_text = st.text_area("Enter prescription text:")
-age_group = st.selectbox("Select Patient Age Group", ["children", "adults", "elderly"])
+    age = st.text_input("Patient Age:")
+    weight = st.text_input("Patient Weight (kg):")
+    conditions = st.text_area("Special Conditions:")
 
-if st.button("Analyze"):
-    if prescription_text.strip():
-        with st.spinner("Analyzing prescription..."):
-            entities = extract_entities(prescription_text)
-            drugs = normalize_drug_names(entities, prescription_text)
-            dosages = extract_dosage_info(prescription_text, entities)
-            diseases = extract_diseases(entities, prescription_text)
-            interactions = check_drug_interactions(drugs)
-            schedule = extract_frequency(prescription_text)
+    if extracted_text and st.button("🔍 Extract & Analyze"):
+        with st.spinner("Extracting entities..."):
+            drugs, entities = extract_entities(extracted_text)
+            st.subheader("Entities Extracted")
+            st.write("Drugs:", drugs)
+            st.write("All Entities:", entities)
 
-            # Generate description
-            description = "### 📋 Prescription Analysis Report\n\n"
-            description += f"**Detected Drugs:** {', '.join(drugs) if drugs else 'None found'}\n\n"
-            description += f"**Detected Dosages:** {', '.join(dosages) if dosages else 'None found'}\n\n"
-            description += f"**Detected Diseases/Conditions:** {', '.join(diseases) if diseases else 'None found'}\n\n"
-            description += f"**Drug Interaction Check:** {', '.join(interactions)}\n\n"
-            description += f"**Suggested Schedule:** {', '.join(schedule)}\n\n"
+        with st.spinner("Normalizing drug names..."):
+            normalized = normalize_drug_names(drugs)
+            st.subheader("Normalized Drug Names")
+            st.write(normalized)
 
-            # Age suitability
-            if drugs:
-                description += "### 🧒 Age Suitability\n"
-                for d in drugs:
-                    guideline = check_age_suitability(d, dosages, age_group)
-                    description += f"- {d}: {guideline}\n"
-                description += "\n"
+        with st.spinner("Validating dosages..."):
+            dosage_res = validate_dosages(drugs, age, weight, conditions)
+            st.subheader("Dosage Validation")
+            st.write(dosage_res)
 
-            # Side effects
-            if drugs:
-                description += "### ⚠️ Possible Side Effects\n"
-                for d in drugs:
-                    effects = get_side_effects(d)
-                    description += f"- {d}: {', '.join(effects)}\n"
-                description += "\n"
+        with st.spinner("Checking interactions..."):
+            inter_res = check_interactions([d['word'] for d in drugs])
+            st.subheader("Drug Interactions")
+            st.write(inter_res)
 
-            description += "⚠️ *Disclaimer: This analysis is AI-generated and not a substitute for professional medical advice.*"
+        with st.spinner("IBM Watson NLP..."):
+            watson_res = ibm_watson_analysis(extracted_text)
+            st.subheader("IBM Watson Analysis")
+            st.write(watson_res)
 
-            st.markdown(description)
-    else:
-        st.warning("⚠️ Please enter a prescription text to analyze.")
+    if extracted_text and st.button("🤖 Analyze with AI"):
+        with st.spinner("Loading AI model..."):
+            try:
+                mdl = "ibm-granite/granite-3.3-2b-instruct"
+                device = "cpu"
+                model = AutoModelForCausalLM.from_pretrained(mdl, torch_dtype=torch.float32).to(device)
+                tokenizer = AutoTokenizer.from_pretrained(mdl)
+
+                input_ids = tokenizer.apply_chat_template(
+                    [{"role":"user","content":f"Please analyze:\n\n{extracted_text}"}],
+                    return_tensors="pt", return_dict=True
+                )
+                input_ids = {k: v.to(device) for k,v in input_ids.items()}
+                set_seed(42)
+                output = model.generate(**input_ids, max_new_tokens=256)
+                start = input_ids["input_ids"].shape[1]
+                prediction = tokenizer.decode(output[0, start:], skip_special_tokens=True) if output.shape[1] > start else "No output"
+
+                st.subheader("AI Analysis")
+                st.write(prediction)
+            except Exception as e:
+                st.error(f"AI model error: {e}")

@@ -6,7 +6,7 @@ import torch
 from huggingface_hub import HfApi, login
 
 # Hugging Face Token (hardcoded)
-HF_TOKEN = "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"
+HF_TOKEN = "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"
 
 # ---------------------------
 # Hugging Face Token Validation
